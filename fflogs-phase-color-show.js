@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FFLogs 添加精确百分位显示
 // @namespace    http://tampermonkey.net/
-// @version      0.5
+// @version      0.6
 // @description  在FFLogs带phase参数的页面添加对应阶段的真实百分位列
 // @author       The.D
 // @match        https://cn.fflogs.com/reports/*
@@ -191,33 +191,135 @@
     };
   }
 
-  // 从页面提取bossId
-  function extractBossId() {
-    const bossIcon = document.getElementById('filter-fight-boss-icon');
-    if (bossIcon && bossIcon.src) {
-      const match = bossIcon.src.match(/(\d+)-icon\.jpg$/);
-      if (match && match[1]) {
-        return match[1];
+  // ============ 动态数据源选择 ============
+  // 数据源（ITX351/fflogs_phase_ranker）按 版本目录（v71/v72/.../v750j/v751j2/v751z2）组织，
+  // 每个目录的 config.json 把「副本名(raidMatchNames) + 分P(raidLogsPhase)」映射到具体 CSV 文件。
+  // 旧版写死 v71(7.1 伊甸) 导致看其他版本副本时拿到的数据明显不对；现改为按页面副本名+分P+区服动态匹配。
+  const DATA_REPO_BASE = 'https://raw.githubusercontent.com/ITX351/fflogs_phase_ranker/refs/heads/main/public/data/';
+
+  // 中文副本名 -> 数据源里的英文 raidMatchNames
+  // 原因：cn.fflogs.com 页面常显示中文副本名，而 config.json 的 raidMatchNames 是英文名，需桥接。
+  // 若页面显示其他中文名却匹配不到，请在此补充 '中文名': '英文raidMatchNames'。
+  const ENCOUNTER_ALIASES = {
+    '妖星乱舞': 'Dancing Mad'
+  };
+
+  // 版本目录解析：v71 / v750j / v751j2 / v751z2 ... （j=国服, z=国际服）
+  function parseVersionDir(dir) {
+    const m = dir.match(/^v(\d+)([jz])?(\d*)$/);
+    if (!m) return null;
+    return { num: parseInt(m[1], 10), region: m[2] || null, sub: m[3] ? parseInt(m[3], 10) : 0 };
+  }
+
+  // 缓存：版本列表、各版本 config、数据集索引（SPA 内导航时复用，避免重复请求）
+  let versionListCache = null;
+  const configCache = {};
+  let datasetIndex = null;
+
+  // GM_xmlhttpRequest 封装（返回文本）
+  function gmGetText(url) {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url: url,
+        onload: function (r) {
+          if (r.status === 200) resolve(r.responseText);
+          else reject(new Error('HTTP ' + r.status + ' @ ' + url));
+        },
+        onerror: function (e) { reject(e); }
+      });
+    });
+  }
+
+  // 读取 config_file_list.json，得到所有版本目录
+  async function fetchVersionList() {
+    if (versionListCache) return versionListCache;
+    const text = await gmGetText(DATA_REPO_BASE + 'config_file_list.json');
+    versionListCache = JSON.parse(text);
+    return versionListCache;
+  }
+
+  // 读取某版本目录的 config.json（缓存；缺失则标记为 null）
+  async function fetchVersionConfig(dir) {
+    if (Object.prototype.hasOwnProperty.call(configCache, dir)) return configCache[dir];
+    try {
+      const text = await gmGetText(DATA_REPO_BASE + dir + '/config.json');
+      const cfg = JSON.parse(text);
+      configCache[dir] = cfg;
+      return cfg;
+    } catch (e) {
+      configCache[dir] = null;
+      return null;
+    }
+  }
+
+  // 构建 副本名 -> 候选数据集 的索引（候选按版本新旧排序，新版优先）
+  async function buildDatasetIndex() {
+    if (datasetIndex) return datasetIndex;
+    const list = await fetchVersionList();
+    const byName = {};
+    for (const item of list) {
+      const cfg = await fetchVersionConfig(item.version);
+      if (!cfg) continue;
+      const pv = parseVersionDir(item.version);
+      for (const entry of cfg) {
+        const region = pv ? pv.region : null;
+        for (const name of (entry.raidMatchNames || [])) {
+          const n = normalizeText(name);
+          if (!byName[n]) byName[n] = [];
+          byName[n].push({ dir: item.version, phase: String(entry.raidLogsPhase), file: entry.dataFileName, region });
+        }
       }
+    }
+    for (const n in byName) {
+      byName[n].sort((a, b) => {
+        const pa = parseVersionDir(a.dir), pb = parseVersionDir(b.dir);
+        return (pb.num - pa.num) || (pb.sub - pa.sub);
+      });
+    }
+    datasetIndex = { byName, names: Object.keys(byName) };
+    return datasetIndex;
+  }
+
+  // 从页面提取当前副本名：扫描页面（含嵌入JSON）中出现的已知副本名；中文名走别名表。带重试。
+  async function extractEncounterName() {
+    const idx = await buildDatasetIndex();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const htmlNorm = normalizeText(document.documentElement.innerHTML);
+      for (const name of idx.names) {
+        if (htmlNorm.includes(name)) return name;
+      }
+      for (const cn in ENCOUNTER_ALIASES) {
+        if (htmlNorm.includes(normalizeText(cn))) {
+          const en = normalizeText(ENCOUNTER_ALIASES[cn]);
+          if (idx.byName[en]) return en;
+        }
+      }
+      if (attempt < 2) await new Promise(r => setTimeout(r, 1200));
     }
     return null;
   }
 
-  // 根据bossId获取CSV文件名前缀
-  function getCsvPrefix(bossId) {
-    if (bossId === '1079') {
-      return 'eden7.1';
-    } else if (bossId === '1077') {
-      return 'omega7.1';
+  // 根据副本名+分P+区服，解析出正确的 CSV URL
+  async function resolveCsvUrl(encounterNorm, phase, region) {
+    const idx = await buildDatasetIndex();
+    const cands = idx.byName[encounterNorm];
+    if (!cands) return null;
+    // 按区域过滤：优先该区服专属目录(j/z)，否则用无后缀(旧版统一)目录
+    const filtered = cands.filter(c => c.region === null || c.region === region);
+    const pool = filtered.length ? filtered : cands;
+    for (const c of pool) {
+      if (String(c.phase) !== String(phase)) continue;
+      let file = c.file;
+      // 国服优先带 _chn 的文件（v71 等旧目录同时存在 _chn 与英文两份）
+      if (region === 'j' && !file.endsWith('_chn.csv')) {
+        const chn = cands.find(x => x.dir === c.dir && String(x.phase) === String(c.phase) && x.file.endsWith('_chn.csv'));
+        if (chn) file = chn.file;
+      }
+      return { url: DATA_REPO_BASE + c.dir + '/' + file, version: c.dir };
     }
-    // 默认返回eden7.1
-    return 'eden7.1';
+    return null;
   }
-
-  // CSV 数据源基础路径
-  // 注意：ITX351/fflogs_phase_ranker 仓库中 7.1 版本数据位于 public/data/v71/ 子目录下，
-  // 旧版脚本漏掉了 v71/ 这一层，导致请求 404、拿不到数据、单元格只能显示 '-'。
-  const CSV_BASE = 'https://raw.githubusercontent.com/ITX351/fflogs_phase_ranker/refs/heads/main/public/data/v71/';
 
   // 获取职业百分位数据
   async function fetchJobPercentileStats(jobClass, phaseId) {
@@ -227,9 +329,23 @@
     }
 
     const phaseNumber = phaseId || '1';
-    const bossId = extractBossId();
-    const csvPrefix = getCsvPrefix(bossId);
-    const csvUrl = `${CSV_BASE}${csvPrefix}p${phaseNumber}.csv`;
+    const region = (parseUrl().domain === 'cn') ? 'j' : 'z';
+
+    let csvUrl = null;
+    try {
+      const encounterName = await extractEncounterName();
+      if (encounterName) {
+        const resolved = await resolveCsvUrl(normalizeText(encounterName), phaseNumber, region);
+        if (resolved) csvUrl = resolved.url;
+      }
+    } catch (e) {
+      console.error('解析数据源失败:', e);
+    }
+
+    if (!csvUrl) {
+      console.warn('无法确定对应 CSV 数据源（副本名未匹配或分P不存在），该单元格将显示 -');
+      return null;
+    }
     console.log('请求CSV数据:', csvUrl);
 
     try {
@@ -241,23 +357,7 @@
         return dpsValues;
       }
 
-      // 使用GM_xmlhttpRequest替代fetch
-      const csvText = await new Promise((resolve, reject) => {
-        GM_xmlhttpRequest({
-          method: 'GET',
-          url: csvUrl,
-          onload: function (response) {
-            if (response.status === 200) {
-              resolve(response.responseText);
-            } else {
-              reject(new Error(`HTTP error! status: ${response.status}`));
-            }
-          },
-          onerror: function (error) {
-            reject(error);
-          }
-        });
-      });
+      const csvText = await gmGetText(csvUrl);
 
       // 保存到CSV缓存
       csvCache[csvUrl] = csvText;
