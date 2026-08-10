@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FFLogs 添加精确百分位显示
 // @namespace    http://tampermonkey.net/
-// @version      0.9
+// @version      0.10
 // @description  在FFLogs带phase参数的页面添加对应阶段的真实百分位列
 // @author       The.D
 // @match        https://cn.fflogs.com/reports/*
@@ -524,6 +524,26 @@
     return isNaN(rdps) ? null : rdps;
   }
 
+  // 确保表头存在百分位列标题（仅插入一次）
+  function ensurePercentileHeader() {
+    if (document.querySelector('.percentile-header')) return;
+
+    const headerRow = document.querySelector('table thead tr');
+    if (!headerRow) return;
+
+    const th = document.createElement('th');
+    th.className = 'percentile-column percentile-header';
+    // 国服(z)显示 cnlogs，国际服(j)显示 enlogs
+    th.textContent = PREFERRED_REGION === 'z' ? 'cnlogs' : 'enlogs';
+
+    const firstTh = headerRow.querySelector('th');
+    if (firstTh) {
+      headerRow.insertBefore(th, firstTh);
+    } else {
+      headerRow.appendChild(th);
+    }
+  }
+
   // 添加百分位列
   async function addPercentileColumn() {
     // 等待表格加载完成
@@ -533,6 +553,9 @@
 
     // 查找所有行
     const rows = document.querySelectorAll('tr[id^="main-table-row-"]');
+
+    // 先补表头，避免所有表头后退错位
+    ensurePercentileHeader();
 
     // 存储所有获取百分位的promise
     const promises = [];
