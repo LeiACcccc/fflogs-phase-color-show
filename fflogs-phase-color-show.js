@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FFLogs 添加精确百分位显示
 // @namespace    http://tampermonkey.net/
-// @version      0.4
+// @version      0.5
 // @description  在FFLogs带phase参数的页面添加对应阶段的真实百分位列
 // @author       The.D
 // @match        https://cn.fflogs.com/reports/*
@@ -214,6 +214,11 @@
     return 'eden7.1';
   }
 
+  // CSV 数据源基础路径
+  // 注意：ITX351/fflogs_phase_ranker 仓库中 7.1 版本数据位于 public/data/v71/ 子目录下，
+  // 旧版脚本漏掉了 v71/ 这一层，导致请求 404、拿不到数据、单元格只能显示 '-'。
+  const CSV_BASE = 'https://raw.githubusercontent.com/ITX351/fflogs_phase_ranker/refs/heads/main/public/data/v71/';
+
   // 获取职业百分位数据
   async function fetchJobPercentileStats(jobClass, phaseId) {
     const cacheKey = `${jobClass}_${phaseId}`;
@@ -224,7 +229,7 @@
     const phaseNumber = phaseId || '1';
     const bossId = extractBossId();
     const csvPrefix = getCsvPrefix(bossId);
-    const csvUrl = `https://raw.githubusercontent.com/ITX351/fflogs_phase_ranker/refs/heads/main/public/data/${csvPrefix}p${phaseNumber}.csv`;
+    const csvUrl = `${CSV_BASE}${csvPrefix}p${phaseNumber}.csv`;
     console.log('请求CSV数据:', csvUrl);
 
     try {
@@ -291,8 +296,8 @@
         if (columns.length > 0) {
           const rowJobClass = columns[0].trim();
 
-          // 检查是否匹配职业
-          if (rowJobClass === jobClass) {
+          // 标准化比较：忽略大小写与空格，兼容 "BlackMage" 与 "Black Mage" 等写法
+          if (normalizeText(rowJobClass) === normalizeText(jobClass)) {
             jobRow = columns;
             break;
           }
@@ -301,7 +306,8 @@
           const jobInfo = JOB_SPECS[jobClass];
           if (jobInfo) {
             const [cnName, enName] = jobInfo;
-            if (rowJobClass === cnName || rowJobClass === enName) {
+            if (normalizeText(rowJobClass) === normalizeText(cnName) ||
+                normalizeText(rowJobClass) === normalizeText(enName)) {
               jobRow = columns;
               break;
             }
@@ -436,7 +442,11 @@
 
       // 获取职业名称
       const jobClassElement = row.querySelector('.main-table-link a');
-      if (!jobClassElement) continue;
+      if (!jobClassElement) {
+        // 找不到职业链接时直接结算为 '-'，避免单元格永远停在"加载中..."
+        updatePercentileCell(cell, '-');
+        continue;
+      }
 
       // 提取职业名称
       const jobClass = jobClassElement.className.trim();
