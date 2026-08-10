@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FFLogs 添加精确百分位显示
 // @namespace    http://tampermonkey.net/
-// @version      0.6
+// @version      0.7
 // @description  在FFLogs带phase参数的页面添加对应阶段的真实百分位列
 // @author       The.D
 // @match        https://cn.fflogs.com/reports/*
@@ -197,6 +197,12 @@
   // 旧版写死 v71(7.1 伊甸) 导致看其他版本副本时拿到的数据明显不对；现改为按页面副本名+分P+区服动态匹配。
   const DATA_REPO_BASE = 'https://raw.githubusercontent.com/ITX351/fflogs_phase_ranker/refs/heads/main/public/data/';
 
+  // 数据区服偏好：'j' = 国服(cn.fflogs.com)，'z' = 国际服(www.fflogs.com)。
+  // 默认使用国服数据；如需国际服百分位，改为 'z' 即可。
+  // 注意：之前按访问域名自动判断，但用户实际在国服站点也会取到国际服数据，
+  // 故改为显式偏好，避免依赖域名猜测。
+  const PREFERRED_REGION = 'j';
+
   // 中文副本名 -> 数据源里的英文 raidMatchNames
   // 原因：cn.fflogs.com 页面常显示中文副本名，而 config.json 的 raidMatchNames 是英文名，需桥接。
   // 若页面显示其他中文名却匹配不到，请在此补充 '中文名': '英文raidMatchNames'。
@@ -329,7 +335,7 @@
     }
 
     const phaseNumber = phaseId || '1';
-    const region = (parseUrl().domain === 'cn') ? 'j' : 'z';
+    const region = PREFERRED_REGION;
 
     let csvUrl = null;
     try {
