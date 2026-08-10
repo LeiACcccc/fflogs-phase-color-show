@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FFLogs 添加精确百分位显示
 // @namespace    http://tampermonkey.net/
-// @version      0.11
+// @version      0.12
 // @description  在FFLogs带phase参数的页面添加对应阶段的真实百分位列
 // @author       The.D
 // @match        https://cn.fflogs.com/reports/*
@@ -534,11 +534,18 @@
     if (!headerRow) return;
 
     const th = document.createElement('th');
-    th.className = 'percentile-column percentile-header';
+    // 继承网页表头本身的样式：复制第一个已有 th 的类名，再叠加我们的标记类，
+    // 这样 cnlogs/enlogs 表头能自动匹配 FFLogs 原生的 UI 风格。
+    const firstTh = headerRow.querySelector('th');
+    if (firstTh) {
+      th.className = firstTh.className + ' percentile-column percentile-header';
+      if (!th.getAttribute('scope')) th.setAttribute('scope', 'col');
+    } else {
+      th.className = 'percentile-column percentile-header';
+    }
     // 国服(z)显示 cnlogs，国际服(j)显示 enlogs
     th.textContent = PREFERRED_REGION === 'z' ? 'cnlogs' : 'enlogs';
 
-    const firstTh = headerRow.querySelector('th');
     if (firstTh) {
       headerRow.insertBefore(th, firstTh);
     } else {
