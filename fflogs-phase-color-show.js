@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FFLogs 添加精确百分位显示
 // @namespace    http://tampermonkey.net/
-// @version      0.7
+// @version      0.8
 // @description  在FFLogs带phase参数的页面添加对应阶段的真实百分位列
 // @author       The.D
 // @match        https://cn.fflogs.com/reports/*
@@ -313,6 +313,10 @@
     if (!cands) return null;
     // 按区域过滤：优先该区服专属目录(j/z)，否则用无后缀(旧版统一)目录
     const filtered = cands.filter(c => c.region === null || c.region === region);
+    if (filtered.length === 0 && region === 'j') {
+      console.warn('[phase-color] 国服(j)数据中未找到「' + encounterNorm + '」P' + phase +
+        '，将回退使用国际服数据。候选版本: ' + cands.map(c => c.dir).join(','));
+    }
     const pool = filtered.length ? filtered : cands;
     for (const c of pool) {
       if (String(c.phase) !== String(phase)) continue;
@@ -336,13 +340,18 @@
 
     const phaseNumber = phaseId || '1';
     const region = PREFERRED_REGION;
+    console.log('[phase-color] 开始解析: region=' + region + ' phase=' + phaseNumber);
 
     let csvUrl = null;
     try {
       const encounterName = await extractEncounterName();
+      console.log('[phase-color] 匹配到的副本名: ' + encounterName);
       if (encounterName) {
         const resolved = await resolveCsvUrl(normalizeText(encounterName), phaseNumber, region);
-        if (resolved) csvUrl = resolved.url;
+        if (resolved) {
+          console.log('[phase-color] 使用数据源: ' + resolved.url + ' (版本目录: ' + resolved.version + ')');
+          csvUrl = resolved.url;
+        }
       }
     } catch (e) {
       console.error('解析数据源失败:', e);
