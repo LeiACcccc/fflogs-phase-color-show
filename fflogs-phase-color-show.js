@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FFLogs 添加精确百分位显示
 // @namespace    http://tampermonkey.net/
-// @version      0.8
+// @version      0.9
 // @description  在FFLogs带phase参数的页面添加对应阶段的真实百分位列
 // @author       The.D
 // @match        https://cn.fflogs.com/reports/*
@@ -197,11 +197,11 @@
   // 旧版写死 v71(7.1 伊甸) 导致看其他版本副本时拿到的数据明显不对；现改为按页面副本名+分P+区服动态匹配。
   const DATA_REPO_BASE = 'https://raw.githubusercontent.com/ITX351/fflogs_phase_ranker/refs/heads/main/public/data/';
 
-  // 数据区服偏好：'j' = 国服(cn.fflogs.com)，'z' = 国际服(www.fflogs.com)。
-  // 默认使用国服数据；如需国际服百分位，改为 'z' 即可。
-  // 注意：之前按访问域名自动判断，但用户实际在国服站点也会取到国际服数据，
-  // 故改为显式偏好，避免依赖域名猜测。
-  const PREFERRED_REGION = 'j';
+  // 数据区服偏好：'z' = 国服(cn.fflogs.com)，'j' = 国际服(www.fflogs.com)。
+  // 注意：数据源仓库(ITX351/fflogs_phase_ranker)的目录后缀含义为 j=国际服、z=国服
+  //       （见各版本 config.json 的 datasetName，如 "7.51国际服妖星" 在 v751j2、"7.51国服妖星" 在 v751z2）。
+  // 默认使用国服数据；如需国际服百分位，改为 'j' 即可。
+  const PREFERRED_REGION = 'z';
 
   // 中文副本名 -> 数据源里的英文 raidMatchNames
   // 原因：cn.fflogs.com 页面常显示中文副本名，而 config.json 的 raidMatchNames 是英文名，需桥接。
@@ -313,16 +313,16 @@
     if (!cands) return null;
     // 按区域过滤：优先该区服专属目录(j/z)，否则用无后缀(旧版统一)目录
     const filtered = cands.filter(c => c.region === null || c.region === region);
-    if (filtered.length === 0 && region === 'j') {
-      console.warn('[phase-color] 国服(j)数据中未找到「' + encounterNorm + '」P' + phase +
+    if (filtered.length === 0 && region === 'z') {
+      console.warn('[phase-color] 国服(z)数据中未找到「' + encounterNorm + '」P' + phase +
         '，将回退使用国际服数据。候选版本: ' + cands.map(c => c.dir).join(','));
     }
     const pool = filtered.length ? filtered : cands;
     for (const c of pool) {
       if (String(c.phase) !== String(phase)) continue;
       let file = c.file;
-      // 国服优先带 _chn 的文件（v71 等旧目录同时存在 _chn 与英文两份）
-      if (region === 'j' && !file.endsWith('_chn.csv')) {
+      // 国服(z)优先带 _chn 的文件（v71 等旧目录同时存在 _chn 与英文两份，_chn=国服）
+      if (region === 'z' && !file.endsWith('_chn.csv')) {
         const chn = cands.find(x => x.dir === c.dir && String(x.phase) === String(c.phase) && x.file.endsWith('_chn.csv'));
         if (chn) file = chn.file;
       }
