@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FFLogs 添加精确百分位显示
 // @namespace    http://tampermonkey.net/
-// @version      0.10
+// @version      0.11
 // @description  在FFLogs带phase参数的页面添加对应阶段的真实百分位列
 // @author       The.D
 // @match        https://cn.fflogs.com/reports/*
@@ -156,9 +156,11 @@
     }
   }
 
-  // 检查是否在带phase参数的页面上
+  // 检查是否在带具体分P参数的页面上（phase=数字）
+  // 注意：FFLogs 的 "ALL Phases" 对应 phase=all，不视为分P页面，
+  // 故这里要求 phase= 后面跟数字，才不会在 ALL Phases 下显示分P百分位。
   function isPhaseReport() {
-    return window.location.href.includes('phase=') && window.location.href.includes('type=damage-done');
+    return /phase=\d+/.test(window.location.href) && window.location.href.includes('type=damage-done');
   }
 
   // 检查是否是伤害统计页面
@@ -692,11 +694,27 @@
 
   // 处理表格更新
   function handleTableUpdate() {
+    // 是否处于具体分P页面（phase=数字）且为伤害统计
+    const isPhasePage = isPhaseReport();
+    const isNonDamagePage = !isDamageDonePage();
+    const hasPercentileColumn = document.querySelector('.percentile-column') !== null;
+
+    // 移除条件：非分P页面（含 ALL Phases: phase=all）且已存在百分位列，
+    //          或非伤害统计页面 -> 移除并退出
+    if ((!isPhasePage && hasPercentileColumn) || isNonDamagePage) {
+      console.log('检测到非分P页面(含ALL Phases)或非伤害统计页面，移除所有百分位列');
+      removePercentileColumns();
+      return;
+    }
+
+    // 仅在具体分P页面才允许添加/刷新百分位列（ALL Phases 下直接跳过，避免误显示）
+    if (!isPhasePage) return;
+
     // 查找所有行
     const rows = document.querySelectorAll('tr[id^="main-table-row-"]');
 
     // 检查是否需要添加百分位列
-    const needsPercentileColumn = rows.length > 0 && !document.querySelector('.percentile-column');
+    const needsPercentileColumn = rows.length > 0 && !hasPercentileColumn;
 
     // 检查是否有百分位列但内容为空
     const hasEmptyPercentileCells = document.querySelectorAll('.percentile-column span:empty').length > 0;
@@ -705,20 +723,6 @@
     const hasLoadingCells = Array.from(document.querySelectorAll('.percentile-column span')).some(
       span => span.textContent === '加载中...'
     );
-
-    // 检查是否在非phase页面但存在百分位列
-    const isNonPhasePage = !isPhaseReport();
-    const hasPercentileColumn = document.querySelector('.percentile-column') !== null;
-
-    // 检查是否在非伤害统计页面
-    const isNonDamagePage = !isDamageDonePage();
-
-    // 如果在非phase页面但存在百分位列，或者不在伤害统计页面，则移除所有百分位列
-    if ((isNonPhasePage && hasPercentileColumn) || isNonDamagePage) {
-      console.log('检测到非phase页面或非伤害统计页面，移除所有百分位列');
-      removePercentileColumns();
-      return;
-    }
 
     // 如果有行但没有百分位列，或者有空的百分位单元格，或者有加载中的单元格
     if (needsPercentileColumn || hasEmptyPercentileCells || hasLoadingCells) {
