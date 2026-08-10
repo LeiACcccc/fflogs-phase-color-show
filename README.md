@@ -26,7 +26,7 @@
 3. 将脚本内容复制粘贴到编辑器中
 4. 保存脚本
 
-或者直接从 [GreasyFork](https://greasyfork.org/scripts/your-script-id) 安装。
+或者直接从 [ScriptCat](https://scriptcat.org/zh-CN/script-show-page/7414) 安装。
 
 ## 使用方法
 
