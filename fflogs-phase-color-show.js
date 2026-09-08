@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FFLogs 添加精确百分位显示
 // @namespace    http://tampermonkey.net/
-// @version      0.13
+// @version      0.18
 // @description  在FFLogs带phase参数的页面添加对应阶段的真实百分位列
 // @author       The.D
 // @match        https://cn.fflogs.com/reports/*
@@ -12,6 +12,7 @@
 // @connect      cn.fflogs.com
 // @connect      www.fflogs.com
 // @connect      raw.githubusercontent.com
+// @connect      cdn.jsdelivr.net
 // @license      MIT
 // @homepage     https://github.com/The-D66/fflogs-phase-color-show
 // @supportURL   https://github.com/The-D66/fflogs-phase-color-show/issues
@@ -75,45 +76,13 @@
     'LimitBreak': ['极限技', 'Limit Break']
   };
 
-  // 默认DPS值 - 用于无法获取数据时的备用值
-  const DEFAULT_DPS_VALUES = {
-
-  };
-
-  // 反向映射：中文名称 -> CSS类名
-  const CN_TO_CLASS = {};
-  // 反向映射：英文名称 -> CSS类名
-  const EN_TO_CLASS = {};
-
   // 标准化文本（转小写并移除空格）
   function normalizeText(text) {
     return text.toLowerCase().replace(/\s+/g, '');
   }
 
-  // 构建反向映射
-  Object.entries(JOB_SPECS).forEach(([cssClass, [cnName, enName]]) => {
-    // 标准名称
-    CN_TO_CLASS[cnName] = cssClass;
-    EN_TO_CLASS[enName] = cssClass;
-
-    // 标准化的名称（小写且无空格）
-    const normalizedCN = normalizeText(cnName);
-    const normalizedEN = normalizeText(enName);
-
-    // 添加标准化后的名称映射
-    if (normalizedCN !== cnName) {
-      CN_TO_CLASS[normalizedCN] = cssClass;
-    }
-    if (normalizedEN !== enName) {
-      EN_TO_CLASS[normalizedEN] = cssClass;
-    }
-
-    // 处理空格问题，同时支持带空格和不带空格的英文职业名
-    const noSpaceEnName = enName.replace(/\s+/g, '');
-    if (noSpaceEnName !== enName) {
-      EN_TO_CLASS[noSpaceEnName] = cssClass;
-    }
-  });
+  // 调试开关：置为 true 时输出每行的职业与 rDPS 日志
+  const DEBUG = false;
 
   // 百分位数据缓存
   const percentileCache = {};
@@ -123,10 +92,19 @@
   const CACHE_EXPIRY = 24 * 60 * 60 * 1000;
 
   // 初始化缓存
+  // 注意：缓存键带版本号(v14)，避免新旧版本脚本共用同一份过期数据
+  const CACHE_KEY = 'fflogs_csv_cache_v14';
   function initCache() {
     try {
+      // 清理旧版本缓存键，避免不同版本脚本互相读取过期数据
+      if (localStorage.getItem('fflogs_csv_cache')) {
+        localStorage.removeItem('fflogs_csv_cache');
+        console.log('已清理旧版缓存 fflogs_csv_cache');
+      }
+      // 加载版本元数据缓存（版本列表 + 各版本 config）
+      loadMetaCache();
       // 从localStorage加载CSV缓存
-      const savedCsvCache = localStorage.getItem('fflogs_csv_cache');
+      const savedCsvCache = localStorage.getItem(CACHE_KEY);
       if (savedCsvCache) {
         const parsedCache = JSON.parse(savedCsvCache);
         // 检查缓存是否过期
@@ -149,7 +127,7 @@
         timestamp: Date.now(),
         data: csvCache
       };
-      localStorage.setItem('fflogs_csv_cache', JSON.stringify(cacheData));
+      localStorage.setItem(CACHE_KEY, JSON.stringify(cacheData));
       console.log('CSV缓存已保存到localStorage');
     } catch (error) {
       console.error('保存CSV缓存失败:', error);
@@ -175,21 +153,10 @@
     const fightMatch = url.match(/fight=(\d+)/);
     const phaseMatch = url.match(/phase=(\d+)/);
 
-    // 判断域名
-    const domain = url.includes('cn.fflogs.com') ? 'cn' : 'www';
-
-    // 尝试从URL获取boss信息，默认为当前版本raid
-    // 实际应用中可能需要根据副本名称动态确定
-    const bossId = '1079'; // 默认为Fatebreaker/破命斗士
-    const zoneId = '65';   // 默认为当前版本raid
-
     return {
       reportId: reportMatch ? reportMatch[1] : null,
       fightId: fightMatch ? fightMatch[1] : null,
-      phaseId: phaseMatch ? phaseMatch[1] : null,
-      bossId: bossId,
-      zoneId: zoneId,
-      domain: domain
+      phaseId: phaseMatch ? phaseMatch[1] : null
     };
   }
 
@@ -224,19 +191,74 @@
   const configCache = {};
   let datasetIndex = null;
 
-  // GM_xmlhttpRequest 封装（返回文本）
-  function gmGetText(url) {
+  // 元数据缓存（版本列表 + 各版本 config）整份存 localStorage，24h 有效：
+  // 避免每次打开页面都要并行拉十几个 config.json
+  const META_CACHE_KEY = 'fflogs_meta_cache_v18';
+  function loadMetaCache() {
+    try {
+      const raw = localStorage.getItem(META_CACHE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed.timestamp || Date.now() - parsed.timestamp >= CACHE_EXPIRY) return;
+      if (parsed.versionList) versionListCache = parsed.versionList;
+      if (parsed.configs) Object.assign(configCache, parsed.configs);
+      console.log('[phase-color] 已从localStorage加载版本元数据缓存');
+    } catch (e) { /* 缓存损坏时忽略，走正常网络获取 */ }
+  }
+  function saveMetaCache() {
+    try {
+      localStorage.setItem(META_CACHE_KEY, JSON.stringify({
+        timestamp: Date.now(),
+        versionList: versionListCache,
+        configs: configCache
+      }));
+    } catch (e) { /* 存储异常忽略 */ }
+  }
+
+  // GM_xmlhttpRequest 封装（返回文本，带超时，超时后明确失败而不是一直挂起）
+  function gmGetText(url, timeoutMs) {
     return new Promise((resolve, reject) => {
+      let settled = false;
       GM_xmlhttpRequest({
         method: 'GET',
         url: url,
+        timeout: timeoutMs || 12000,
         onload: function (r) {
+          if (settled) return; settled = true;
           if (r.status === 200) resolve(r.responseText);
           else reject(new Error('HTTP ' + r.status + ' @ ' + url));
         },
-        onerror: function (e) { reject(e); }
+        onerror: function (e) { if (settled) return; settled = true; reject(e && e.error ? new Error(e.error) : new Error('网络错误 @ ' + url)); },
+        ontimeout: function () { if (settled) return; settled = true; reject(new Error('请求超时 @ ' + url)); }
       });
     });
+  }
+
+  // 主源(raw.githubusercontent.com，国内常慢/被墙)失败或超时时，自动切到 jsDelivr 镜像
+  function toMirrorUrl(url) {
+    const raw = 'https://raw.githubusercontent.com/ITX351/fflogs_phase_ranker/refs/heads/main/';
+    if (url.indexOf(raw) === 0) {
+      return 'https://cdn.jsdelivr.net/gh/ITX351/fflogs_phase_ranker@main/' + url.slice(raw.length);
+    }
+    return null;
+  }
+
+  // 国内直连 raw.githubusercontent.com 经常很慢/被拦截，默认优先走 jsDelivr 镜像，失败再回主源
+  const PREFER_MIRROR = true;
+
+  async function gmGetTextWithFallback(url) {
+    const mirror = toMirrorUrl(url);
+    const order = (PREFER_MIRROR && mirror) ? [mirror, url] : [url, mirror].filter(Boolean);
+    let lastErr = null;
+    for (const target of order) {
+      try {
+        return await gmGetText(target, 10000);
+      } catch (e) {
+        lastErr = e;
+        console.warn('[phase-color] 取数据失败(' + (e && e.message ? e.message : e) + ')，尝试下一个源...');
+      }
+    }
+    throw lastErr || new Error('全部数据源均不可用');
   }
 
   // 读取 config_file_list.json，得到所有版本目录
@@ -265,9 +287,13 @@
   async function buildDatasetIndex() {
     if (datasetIndex) return datasetIndex;
     const list = await fetchVersionList();
+    const cfgPairs = await Promise.all(list.map(async (item) => ({
+      item: item, cfg: await fetchVersionConfig(item.version)
+    })));
+    saveMetaCache();
     const byName = {};
-    for (const item of list) {
-      const cfg = await fetchVersionConfig(item.version);
+    for (const pair of cfgPairs) {
+      const item = pair.item, cfg = pair.cfg;
       if (!cfg) continue;
       const pv = parseVersionDir(item.version);
       for (const entry of cfg) {
@@ -289,16 +315,34 @@
     return datasetIndex;
   }
 
-  // 从页面提取当前副本名：扫描页面（含嵌入JSON）中出现的已知副本名；中文名走别名表。带重试。
+  // 从页面提取当前副本名。
+  // 优先用 document.title（FFLogs 页面标题形如 "杀条_战斗_4 - 报告: Dancing Mad - FF Logs"，必含当前副本名）。
+  // 整页 HTML 扫描只作最后兜底：页面上可能出现其它副本的引用（如他人战绩列表），
+  // 此前曾把 Futures Rewritten 误判为当前副本，导致拉错数据源（取成 v750z 的伊甸数据）。
   async function extractEncounterName() {
     const idx = await buildDatasetIndex();
     for (let attempt = 0; attempt < 3; attempt++) {
-      const htmlNorm = normalizeText(document.documentElement.innerHTML);
+      // 1) 页面标题（最可靠）
+      const titleNorm = normalizeText(document.title || '');
+      if (titleNorm) {
+        for (const name of idx.names) {
+          if (titleNorm.includes(name)) return name;
+        }
+        for (const cn in ENCOUNTER_ALIASES) {
+          if (titleNorm.includes(normalizeText(cn))) {
+            const en = normalizeText(ENCOUNTER_ALIASES[cn]);
+            if (idx.byName[en]) return en;
+          }
+        }
+      }
+      // 2) 兜底：只在报告表格容器内扫描（范围远小于整页，误判概率低）
+      const scope = document.getElementById('main-table-container') || document.body;
+      const scopeNorm = normalizeText(scope.innerHTML || '');
       for (const name of idx.names) {
-        if (htmlNorm.includes(name)) return name;
+        if (scopeNorm.includes(name)) return name;
       }
       for (const cn in ENCOUNTER_ALIASES) {
-        if (htmlNorm.includes(normalizeText(cn))) {
+        if (scopeNorm.includes(normalizeText(cn))) {
           const en = normalizeText(ENCOUNTER_ALIASES[cn]);
           if (idx.byName[en]) return en;
         }
@@ -333,61 +377,91 @@
     return null;
   }
 
-  // 获取职业百分位数据
-  async function fetchJobPercentileStats(jobClass, phaseId) {
-    const cacheKey = `${jobClass}_${phaseId}`;
-    if (percentileCache[cacheKey]) {
-      return percentileCache[cacheKey];
+  // ===== 整页只解析一次数据源（性能关键）=====
+  // 之前每插一行都要重新扫描整页 HTML 找副本名并重新解析数据源，
+  // 8 个玩家就要扫 8 遍整页 → 表现为"逐行加载、非常慢"。这里改为按分P缓存解析结果。
+  // 用 Promise 缓存解析过程：8 行同时进来时共用同一份解析，不会重复扫描页面/重复联网
+  const phaseCsvPromises = {};      // phaseId -> Promise<{url,version}|null>
+  const phaseCsvLoadPromises = {};  // phaseId -> Promise<url|null>
+  let encounterNamePromise = null;  // 副本名只扫描一次
+
+  function getEncounterNameOnce() {
+    if (!encounterNamePromise) {
+      encounterNamePromise = extractEncounterName().then(function (name) {
+        console.log('[phase-color] 匹配到的副本名: ' + name);
+        return name;
+      });
     }
+    return encounterNamePromise;
+  }
 
-    const phaseNumber = phaseId || '1';
-    const region = PREFERRED_REGION;
-    console.log('[phase-color] 开始解析: region=' + region + ' phase=' + phaseNumber);
-
-    let csvUrl = null;
-    try {
-      const encounterName = await extractEncounterName();
-      console.log('[phase-color] 匹配到的副本名: ' + encounterName);
-      if (encounterName) {
-        const resolved = await resolveCsvUrl(normalizeText(encounterName), phaseNumber, region);
-        if (resolved) {
-          console.log('[phase-color] 使用数据源: ' + resolved.url + ' (版本目录: ' + resolved.version + ')');
-          csvUrl = resolved.url;
+  // 解析并缓存「该分P对应的 CSV 数据源」
+  function resolvePhaseCsv(phaseId) {
+    const key = String(phaseId || '1');
+    if (!phaseCsvPromises[key]) {
+      phaseCsvPromises[key] = (async function () {
+        let result = null;
+        try {
+          const enc = await getEncounterNameOnce();
+          if (enc) {
+            result = await resolveCsvUrl(normalizeText(enc), key, PREFERRED_REGION);
+            if (result) {
+              console.log('[phase-color] region=' + PREFERRED_REGION + ' phase=' + key +
+                ' -> 数据源: ' + result.url + ' (目录: ' + result.version + ')');
+            }
+          }
+        } catch (e) {
+          console.error('[phase-color] 解析数据源失败:', e && e.message ? e.message : e);
         }
+        if (!result) {
+          console.warn('[phase-color] 无法确定 CSV 数据源（副本名未匹配或该分P无数据），将显示 -');
+        }
+        return result;
+      })();
+    }
+    return phaseCsvPromises[key];
+  }
+
+  // 预取该分P的 CSV：整页只下一次网络请求，所有职业共用这一份
+  function preloadPhaseCsv(phaseId) {
+    const key = String(phaseId || '1');
+    if (!phaseCsvLoadPromises[key]) {
+      phaseCsvLoadPromises[key] = (async function () {
+        const r = await resolvePhaseCsv(phaseId);
+        if (!r) return null;
+        if (csvCache[r.url]) return r.url;
+        console.log('[phase-color] 请求CSV数据: ' + r.url);
+        const csvText = await gmGetTextWithFallback(r.url);
+        csvCache[r.url] = csvText;
+        saveCache();
+        return r.url;
+      })();
+    }
+    return phaseCsvLoadPromises[key];
+  }
+
+  // 获取职业百分位数据（数据已预取，这里只解析，不再发起网络请求）
+  async function fetchJobPercentileStats(jobClass, phaseId) {
+    const cacheKey = jobClass + '_' + (phaseId || '1');
+    if (percentileCache[cacheKey]) return percentileCache[cacheKey];
+
+    const r = await resolvePhaseCsv(phaseId);
+    if (!r) return null;
+
+    if (!csvCache[r.url]) {
+      // 未被预取时兜底拉一次（带超时与镜像）
+      try {
+        csvCache[r.url] = await gmGetTextWithFallback(r.url);
+        saveCache();
+      } catch (error) {
+        console.error('[phase-color] 获取CSV数据失败:', error && error.message ? error.message : error);
+        return null;
       }
-    } catch (e) {
-      console.error('解析数据源失败:', e);
     }
 
-    if (!csvUrl) {
-      console.warn('无法确定对应 CSV 数据源（副本名未匹配或分P不存在），该单元格将显示 -');
-      return null;
-    }
-    console.log('请求CSV数据:', csvUrl);
-
-    try {
-      // 检查CSV缓存
-      if (csvCache[csvUrl]) {
-        console.log('使用缓存的CSV数据');
-        const dpsValues = parseCSVData(csvCache[csvUrl], jobClass);
-        percentileCache[cacheKey] = dpsValues;
-        return dpsValues;
-      }
-
-      const csvText = await gmGetText(csvUrl);
-
-      // 保存到CSV缓存
-      csvCache[csvUrl] = csvText;
-      // 保存缓存到localStorage
-      saveCache();
-
-      const dpsValues = parseCSVData(csvText, jobClass);
-      percentileCache[cacheKey] = dpsValues;
-      return dpsValues;
-    } catch (error) {
-      console.error('获取CSV数据失败:', error);
-      return null;
-    }
+    const dpsValues = parseCSVData(csvCache[r.url], jobClass);
+    percentileCache[cacheKey] = dpsValues;
+    return dpsValues;
   }
 
   // 解析CSV数据
@@ -454,30 +528,6 @@
     }
   }
 
-  // 获取页面内容
-  function fetchPage(url) {
-    return new Promise((resolve, reject) => {
-      GM_xmlhttpRequest({
-        method: 'GET',
-        url: url,
-        timeout: 10000, // 设置10秒超时
-        onload: function (response) {
-          if (response.status === 200) {
-            resolve(response.responseText);
-          } else {
-            reject(`请求失败: ${response.status}`);
-          }
-        },
-        onerror: function (error) {
-          reject(error);
-        },
-        ontimeout: function () {
-          reject('请求超时');
-        }
-      });
-    });
-  }
-
   // 根据DPS计算百分位
   function calculatePercentile(rdps, percentileData) {
     if (!percentileData || Object.keys(percentileData).length === 0) {
@@ -489,9 +539,9 @@
       .map(Number)
       .sort((a, b) => b - a);
 
-    // 如果高于最高百分位
+    // 如果达到/超过最高百分位点（P100）
     if (rdps >= percentileData[percentiles[0]]) {
-      return 99; // 默认为最高的已知百分位
+      return 100; // 达到或超过最高百分位，显示 100
     }
 
     // 如果低于最低百分位
@@ -528,7 +578,7 @@
 
   // 确保表头存在百分位列标题（仅插入一次）
   function ensurePercentileHeader() {
-    if (document.querySelector('.percentile-header')) return;
+    if (document.querySelector('.percentile-header-v14')) return;
 
     const headerRow = document.querySelector('table thead tr');
     if (!headerRow) return;
@@ -538,10 +588,10 @@
     // 这样 CN_logs/EN_logs 表头能自动匹配 FFLogs 原生的 UI 风格。
     const firstTh = headerRow.querySelector('th');
     if (firstTh) {
-      th.className = firstTh.className + ' percentile-column percentile-header';
+      th.className = firstTh.className + ' percentile-column percentile-header percentile-header-v14';
       if (!th.getAttribute('scope')) th.setAttribute('scope', 'col');
     } else {
-      th.className = 'percentile-column percentile-header';
+      th.className = 'percentile-column percentile-header percentile-header-v14';
     }
     // 国服(z)显示 CN_logs，国际服(j)显示 EN_logs
     th.textContent = PREFERRED_REGION === 'z' ? 'CN_logs' : 'EN_logs';
@@ -553,8 +603,21 @@
     }
   }
 
-  // 添加百分位列
+  // 防止 5 秒轮询与 DOM 变更监听同时触发多次重建（会表现为反复"逐行加载"）
+  let columnBuildRunning = false;
   async function addPercentileColumn() {
+    if (columnBuildRunning) return;
+    columnBuildRunning = true;
+    try {
+      await addPercentileColumnInternal();
+    } catch (e) {
+      console.error('[phase-color] 构建百分位列出错:', e && e.message ? e.message : e);
+    } finally {
+      columnBuildRunning = false;
+    }
+  }
+
+  async function addPercentileColumnInternal() {
     // 等待表格加载完成
     await waitForElement('tr[id^="main-table-row-"]');
 
@@ -565,6 +628,23 @@
 
     // 先补表头，避免所有表头后退错位
     ensurePercentileHeader();
+
+    // 整页只预取一次该分P的 CSV，之后所有行共用，避免逐行联网（这是"很慢/逐行加载"的主因）
+    try {
+      await preloadPhaseCsv(reportInfo.phaseId);
+    } catch (e) {
+      console.error('[phase-color] 预取CSV失败:', e && e.message ? e.message : e);
+    }
+
+    // 看门狗：30 秒后仍停留在"加载中..."的单元格一律结算为 '-'，绝不允许永久卡住
+    setTimeout(function () {
+      document.querySelectorAll('.percentile-column span').forEach(function (span) {
+        if (span.textContent === '加载中...') {
+          span.textContent = '-';
+          console.warn('[phase-color] 超时仍未取到数据，已标记为 -');
+        }
+      });
+    }, 30000);
 
     // 存储所有获取百分位的promise
     const promises = [];
@@ -578,7 +658,7 @@
 
       // 创建百分位单元格（初始为空）
       const cell = document.createElement('td');
-      cell.className = 'main-table-performance rank percentile-column';
+      cell.className = 'main-table-performance rank percentile-column percentile-cell-v14';
       cell.innerHTML = '<span>加载中...</span>';
 
       // 插入单元格
@@ -600,6 +680,8 @@
 
       // 获取rdps值
       const rdps = getRDPS(row);
+      // 诊断日志必须放在 rdps 声明之后（v0.14 曾误放在前面导致 TDZ 报错、整列构建中断）
+      if (DEBUG) console.log('[phase-color] 行职业: ' + jobClass + ' | rdps=' + rdps);
       if (rdps === null) {
         // 无RDPS数据，显示-
         updatePercentileCell(cell, '-');
@@ -717,11 +799,15 @@
     // 仅在具体分P页面才允许添加/刷新百分位列（ALL Phases 下直接跳过，避免误显示）
     if (!isPhasePage) return;
 
+    // 清理旧版本脚本残留的百分位单元格/表头（防多版本脚本互相污染数据）
+    const removedLegacy = removeLegacyPercentileCells();
+
     // 查找所有行
     const rows = document.querySelectorAll('tr[id^="main-table-row-"]');
 
-    // 检查是否需要添加百分位列
-    const needsPercentileColumn = rows.length > 0 && !hasPercentileColumn;
+    // 检查是否需要添加百分位列（清理过旧版残留后也强制重建一次）
+    const hasPercentileColumnNow = document.querySelector('.percentile-column') !== null;
+    const needsPercentileColumn = rows.length > 0 && (!hasPercentileColumnNow || removedLegacy);
 
     // 检查是否有百分位列但内容为空
     const hasEmptyPercentileCells = document.querySelectorAll('.percentile-column span:empty').length > 0;
@@ -744,6 +830,23 @@
     percentileColumns.forEach(column => {
       column.remove();
     });
+  }
+
+  // 清理旧版本脚本残留的百分位单元格/表头（不带 v14 版本标记的）
+  // 背景：如果 Tampermonkey 中同时启用了多个版本的脚本，旧版会插入用错误数据源
+  // （如国际服数据）计算的单元格，与本版互相覆盖，导致显示错误的百分位。
+  function removeLegacyPercentileCells() {
+    const legacy = document.querySelectorAll(
+      '.percentile-column:not(.percentile-cell-v14):not(.percentile-header-v14)'
+    );
+    if (legacy.length > 0) {
+      console.warn('[phase-color] 检测到 ' + legacy.length +
+        ' 个旧版脚本插入的百分位单元格/表头，已清理。' +
+        '请打开 Tampermonkey 管理面板，检查是否同时启用了多个版本的 FFLogs 脚本，只保留一个（v0.14）！');
+      legacy.forEach(el => el.remove());
+      return true;
+    }
+    return false;
   }
 
   // 处理phase报告页面
