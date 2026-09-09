@@ -18,7 +18,7 @@
 3. 将脚本内容复制粘贴到编辑器中
 4. 保存脚本
 
-或者直接从[GreasyFork](https://greasyfork.org/scripts/your-script-id)安装。
+或者直接从[GreasyFork](https://greasyfork.org/zh-CN/scripts/531958-fflogs-%E6%B7%BB%E5%8A%A0%E7%B2%BE%E7%A1%AE%E7%99%BE%E5%88%86%E4%BD%8D%E6%98%BE%E7%A4%BA)安装。
 
 ## 使用方法
 
