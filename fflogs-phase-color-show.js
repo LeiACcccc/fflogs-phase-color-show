@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FFLogs 添加精确百分位显示
 // @namespace    http://tampermonkey.net/
-// @version      0.18
+// @version      0.19
 // @description  在FFLogs带phase参数的页面添加对应阶段的真实百分位列
 // @author       The.D
 // @match        https://cn.fflogs.com/reports/*
@@ -385,6 +385,27 @@
   const phaseCsvLoadPromises = {};  // phaseId -> Promise<url|null>
   let encounterNamePromise = null;  // 副本名只扫描一次
 
+  // SPA 内切换副本/分P（不刷新页面）时，按「报告+战斗+分P」上下文失效缓存，
+  // 否则会拿旧副本的数据算新副本的 dps 颜色（原作者评审指出的缓存污染问题）。
+  // 仅 csvCache(localStorage，键含完整 CSV URL) 与 元数据缓存是跨副本通用的，无需失效。
+  let activeContext = null;
+  function computeContext() {
+    const u = parseUrl();
+    return (u.reportId || '?') + '|' + (u.fightId || '?') + '|' + (u.phaseId || '?');
+  }
+  function invalidateCachesIfContextChanged() {
+    const ctx = computeContext();
+    if (ctx === activeContext) return;
+    console.log('[phase-color] 上下文切换 ' + (activeContext || '(初始)') + ' -> ' + ctx + '，失效旧副本缓存');
+    activeContext = ctx;
+    encounterNamePromise = null;
+    Object.keys(phaseCsvPromises).forEach(k => delete phaseCsvPromises[k]);
+    Object.keys(phaseCsvLoadPromises).forEach(k => delete phaseCsvLoadPromises[k]);
+    Object.keys(percentileCache).forEach(k => delete percentileCache[k]);
+    // 同时剥掉旧副本残留的彩色单元格（保留表头），避免 SPA 复用行节点导致旧数字滞留
+    document.querySelectorAll('.percentile-cell-v14').forEach(el => el.remove());
+  }
+
   function getEncounterNameOnce() {
     if (!encounterNamePromise) {
       encounterNamePromise = extractEncounterName().then(function (name) {
@@ -618,6 +639,9 @@
   }
 
   async function addPercentileColumnInternal() {
+    // 切换副本/分P（不刷新页面）时失效旧副本缓存，避免缓存污染串数据
+    invalidateCachesIfContextChanged();
+
     // 等待表格加载完成
     await waitForElement('tr[id^="main-table-row-"]');
 

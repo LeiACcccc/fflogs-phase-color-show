@@ -26,7 +26,7 @@
 3. 将脚本内容复制粘贴到编辑器中
 4. 保存脚本
 
-或者直接从 [ScriptCat](https://scriptcat.org/zh-CN/script-show-page/7414) 安装。
+或者直接从 [GreasyFork](https://greasyfork.org/zh-CN/scripts/531958-fflogs-%E6%B7%BB%E5%8A%A0%E7%B2%BE%E7%A1%AE%E7%99%BE%E5%88%86%E4%BD%8D%E6%98%BE%E7%A4%BA) 安装（推荐分发渠道），也可从 [ScriptCat](https://scriptcat.org/zh-CN/script-show-page/7414) 安装。
 
 ## 使用方法
 
@@ -39,7 +39,7 @@
 
 脚本从 [ITX351/fflogs_phase_ranker](https://github.com/ITX351/fflogs_phase_ranker) 获取 dps 数据，感谢该项目提供的数据支持。
 
-## 主要修复（v0.5 ~ v0.13，由 AI 完成）
+## 主要修复（v0.5 ~ v0.19，由 AI 完成）
 
 1. CSV 数据源路径修正（补 `v71/` 子目录，原 404 导致无数据）
 2. 职业名匹配标准化（兼容 `BlackMage` ↔ `Black Mage`）
@@ -48,6 +48,12 @@
 5. ALL Phases（`phase=all`）下不再显示分P百分数
 6. 为百分位列补独立表头，修复原表头整体错位
 7. 表头文案 `CN_logs` / `EN_logs` 并继承 FFLogs 原生 UI 风格
+8. 修复 TDZ 诊断日志位置错误（v0.14）：原误放在 `rdps` 声明前，导致 `Cannot access 'rdps' before initialization`、整列构建中断、表现为逐行加载
+9. 整页仅解析一次数据源 + 并行拉取各版本 config（v0.15），消除「逐行加载 / 非常慢」
+10. 补齐 `@connect cdn.jsdelivr.net`（v0.16）：切换镜像源时不再因跨域确认永久卡在「加载中」（并默认优先走 jsDelivr 镜像，国内更快更稳）
+11. 副本名优先取 `document.title`（v0.17），避免误匹配页面上其它副本引用（如把 Futures Rewritten 当当前副本，拉错伊甸数据）
+12. 清理死代码 + 元数据整份缓存 localStorage（v0.18），减少重复联网
+13. 修复 SPA 内切换副本的缓存污染（v0.19）：按「报告 + 战斗 + 分P」上下文失效缓存，避免用旧副本数据算新副本的 dps 颜色（原作者评审建议）
 
 ## 注意事项
 
