@@ -21,7 +21,7 @@
 
 ## 安装方法
 
-1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 浏览器扩展
+1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 或者 [ScriptCat](https://docs.scriptcat.org/) 浏览器扩展
 2. 点击 Tampermonkey 图标，选择"添加新脚本"
 3. 将脚本内容复制粘贴到编辑器中
 4. 保存脚本
