@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         FFLogs 添加精确百分位显示
 // @namespace    http://tampermonkey.net/
-// @version      0.19
+// @version      0.21
 // @description  在FFLogs带phase参数的页面添加对应阶段的真实百分位列
 // @author       The.D
 // @match        https://cn.fflogs.com/reports/*
@@ -14,10 +14,17 @@
 // @connect      raw.githubusercontent.com
 // @connect      cdn.jsdelivr.net
 // @license      MIT
-// @homepage     https://github.com/The-D66/fflogs-phase-color-show
+// 相关入口：
+//   ScriptCat         : https://scriptcat.org/zh-CN/script-show-page/7414
+//   原仓库             : https://github.com/The-D66/fflogs-phase-color-show
+//   GreasyFork 页面    : https://greasyfork.org/zh-CN/scripts/531958-fflogs-%E6%B7%BB%E5%8A%A0%E7%B2%BE%E7%A1%AE%E7%99%BE%E5%88%86%E4%BD%8D%E6%98%BE%E7%A4%BA
+// 说明：GreasyFork 由原仓库维护者同步，版本可能滞后；
+// @homepage     https://github.com/LeiACcccc/fflogs-phase-color-show
 // @supportURL   https://github.com/The-D66/fflogs-phase-color-show/issues
-// @updateURL    https://greasyfork.org/scripts/fflogs-phase-color-show/versions/latest
-// @downloadURL  https://greasyfork.org/scripts/fflogs-phase-color-show/download
+// 更新地址必须带 GreasyFork 脚本 ID(531958)，否则 Tampermonkey 的自动更新取不到脚本
+// （ID 来自 GreasyFork 已发布脚本自身的元数据，已实测 200）
+// @updateURL    https://update.greasyfork.org/scripts/531958/FFLogs%20%E6%B7%BB%E5%8A%A0%E7%B2%BE%E7%A1%AE%E7%99%BE%E5%88%86%E4%BD%8D%E6%98%BE%E7%A4%BA.meta.js
+// @downloadURL  https://update.greasyfork.org/scripts/531958/FFLogs%20%E6%B7%BB%E5%8A%A0%E7%B2%BE%E7%A1%AE%E7%99%BE%E5%88%86%E4%BD%8D%E6%98%BE%E7%A4%BA.user.js
 // ==/UserScript==
 
 (function () {
@@ -84,6 +91,21 @@
   // 调试开关：置为 true 时输出每行的职业与 rDPS 日志
   const DEBUG = false;
 
+  // 统一日志出口：DEBUG 关闭时不再有任何 console.log 输出，
+  // 避免 5s 轮询 / MutationObserver 每次都往控制台刷屏。
+  // 注意：console.warn / console.error 保持常开，它们只在异常时出现，是排查依据。
+  function log() {
+    if (!DEBUG) return;
+    console.log.apply(console, arguments);
+  }
+
+  // 当前脚本版本：提示文案统一引用，避免版本号散落多处不同步
+  const SCRIPT_VERSION = '0.21';
+
+  // 缓存键 / DOM 标记共用的「结构版本」：只有缓存结构或 DOM 契约变化时才递增。
+  // 与上面的脚本版本解耦——否则每次发版都会让用户白白重新下载一遍 CSV。
+  const SCHEMA_VERSION = 'v20';
+
   // 百分位数据缓存
   const percentileCache = {};
   // CSV文件缓存
@@ -92,15 +114,18 @@
   const CACHE_EXPIRY = 24 * 60 * 60 * 1000;
 
   // 初始化缓存
-  // 注意：缓存键带版本号(v14)，避免新旧版本脚本共用同一份过期数据
-  const CACHE_KEY = 'fflogs_csv_cache_v14';
+  // 注意：缓存键带结构版本号，避免新旧版本脚本共用同一份过期数据
+  const CACHE_KEY = 'fflogs_csv_cache_' + SCHEMA_VERSION;
   function initCache() {
     try {
-      // 清理旧版本缓存键，避免不同版本脚本互相读取过期数据
-      if (localStorage.getItem('fflogs_csv_cache')) {
-        localStorage.removeItem('fflogs_csv_cache');
-        console.log('已清理旧版缓存 fflogs_csv_cache');
-      }
+      // 清理历史版本遗留的缓存键，避免不同版本脚本互相读取过期/被污染的数据
+      // （v18 元数据缓存可能存着 v72 的失败 null，必须一并清掉）
+      ['fflogs_csv_cache', 'fflogs_csv_cache_v14', 'fflogs_meta_cache_v18'].forEach(function (oldKey) {
+        if (localStorage.getItem(oldKey)) {
+          localStorage.removeItem(oldKey);
+          log('已清理旧版缓存 ' + oldKey);
+        }
+      });
       // 加载版本元数据缓存（版本列表 + 各版本 config）
       loadMetaCache();
       // 从localStorage加载CSV缓存
@@ -110,9 +135,9 @@
         // 检查缓存是否过期
         if (parsedCache.timestamp && (Date.now() - parsedCache.timestamp < CACHE_EXPIRY)) {
           Object.assign(csvCache, parsedCache.data);
-          console.log('已从localStorage加载CSV缓存');
+          log('已从localStorage加载CSV缓存');
         } else {
-          console.log('CSV缓存已过期，将重新获取');
+          log('CSV缓存已过期，将重新获取');
         }
       }
     } catch (error) {
@@ -128,7 +153,7 @@
         data: csvCache
       };
       localStorage.setItem(CACHE_KEY, JSON.stringify(cacheData));
-      console.log('CSV缓存已保存到localStorage');
+      log('CSV缓存已保存到localStorage');
     } catch (error) {
       console.error('保存CSV缓存失败:', error);
     }
@@ -179,11 +204,23 @@
     '妖星乱舞': 'Dancing Mad'
   };
 
-  // 版本目录解析：v71 / v750j / v751j2 / v751z2 ... （j=国服, z=国际服）
+  // 版本目录解析：v71 / v750j / v751j2 / v751z2 ... （j=国际服, z=国服，与上方 169-172 行一致）
   function parseVersionDir(dir) {
     const m = dir.match(/^v(\d+)([jz])?(\d*)$/);
     if (!m) return null;
     return { num: parseInt(m[1], 10), region: m[2] || null, sub: m[3] ? parseInt(m[3], 10) : 0 };
+  }
+
+  // 无 j/z 后缀的旧目录（v71/v72/v73/v725/v738）无法从目录名判断区服，
+  // 但 config 的 datasetName 里写明了「国服 / 国际服」，据此推断。
+  // 不推断的话这些目录会被当成「任何区服通用」，国服用户可能拿到国际服数据
+  // （实测 v72/v73 的 datasetName 是「国际服」，v71/v725/v738 是「国服」）。
+  // 注意：'国际服' 也包含 '国服' 二字，必须先判断 国际服。
+  function inferRegion(datasetName) {
+    if (!datasetName) return null;
+    if (datasetName.indexOf('国际服') !== -1) return 'j';
+    if (datasetName.indexOf('国服') !== -1) return 'z';
+    return null;
   }
 
   // 缓存：版本列表、各版本 config、数据集索引（SPA 内导航时复用，避免重复请求）
@@ -191,9 +228,9 @@
   const configCache = {};
   let datasetIndex = null;
 
-  // 元数据缓存（版本列表 + 各版本 config）整份存 localStorage，24h 有效：
-  // 避免每次打开页面都要并行拉十几个 config.json
-  const META_CACHE_KEY = 'fflogs_meta_cache_v18';
+  // 元数据缓存（版本列表 + 各版本配置）整份存 localStorage，24h 有效：
+  // 避免每次打开页面都要并行拉十几个配置文件
+  const META_CACHE_KEY = 'fflogs_meta_cache_' + SCHEMA_VERSION;
   function loadMetaCache() {
     try {
       const raw = localStorage.getItem(META_CACHE_KEY);
@@ -202,15 +239,21 @@
       if (!parsed.timestamp || Date.now() - parsed.timestamp >= CACHE_EXPIRY) return;
       if (parsed.versionList) versionListCache = parsed.versionList;
       if (parsed.configs) Object.assign(configCache, parsed.configs);
-      console.log('[phase-color] 已从localStorage加载版本元数据缓存');
+      log('[phase-color] 已从localStorage加载版本元数据缓存');
     } catch (e) { /* 缓存损坏时忽略，走正常网络获取 */ }
   }
   function saveMetaCache() {
     try {
+      // 只持久化成功取到的配置：失败(null)不写入 24h 元数据缓存，
+      // 否则一次网络抖动会让该版本数据源整整一天静默丢失。
+      const persisted = {};
+      Object.keys(configCache).forEach(function (dir) {
+        if (configCache[dir]) persisted[dir] = configCache[dir];
+      });
       localStorage.setItem(META_CACHE_KEY, JSON.stringify({
         timestamp: Date.now(),
         versionList: versionListCache,
-        configs: configCache
+        configs: persisted
       }));
     } catch (e) { /* 存储异常忽略 */ }
   }
@@ -264,23 +307,31 @@
   // 读取 config_file_list.json，得到所有版本目录
   async function fetchVersionList() {
     if (versionListCache) return versionListCache;
-    const text = await gmGetText(DATA_REPO_BASE + 'config_file_list.json');
+    // 与 CSV 一致走「镜像优先 + 主源兜底」：国内 raw.githubusercontent.com 常被墙，
+    // 索引拉不到的话整个脚本都无数据（已实测 jsDelivr 镜像内容与主源逐字节一致）
+    const text = await gmGetTextWithFallback(DATA_REPO_BASE + 'config_file_list.json');
     versionListCache = JSON.parse(text);
     return versionListCache;
   }
 
-  // 读取某版本目录的 config.json（缓存；缺失则标记为 null）
-  async function fetchVersionConfig(dir) {
+  // 读取某版本目录的配置（缓存；取不到则标记为 null）
+  // 注意：配置文件名并非都是 config.json —— v72 的实际文件名是 config_glb.json，
+  // 必须以 config_file_list.json 里登记的 fileNames 为准，否则该版本数据会静默丢失。
+  async function fetchVersionConfig(dir, fileNames) {
     if (Object.prototype.hasOwnProperty.call(configCache, dir)) return configCache[dir];
-    try {
-      const text = await gmGetText(DATA_REPO_BASE + dir + '/config.json');
-      const cfg = JSON.parse(text);
-      configCache[dir] = cfg;
-      return cfg;
-    } catch (e) {
-      configCache[dir] = null;
-      return null;
+    const names = (Array.isArray(fileNames) && fileNames.length) ? fileNames : ['config.json'];
+    for (const fileName of names) {
+      try {
+        const text = await gmGetTextWithFallback(DATA_REPO_BASE + dir + '/' + fileName);
+        const cfg = JSON.parse(text);
+        configCache[dir] = cfg;
+        return cfg;
+      } catch (e) {
+        // 该文件名取不到就试下一个；全部失败才标记 null
+      }
     }
+    configCache[dir] = null;
+    return null;
   }
 
   // 构建 副本名 -> 候选数据集 的索引（候选按版本新旧排序，新版优先）
@@ -288,7 +339,7 @@
     if (datasetIndex) return datasetIndex;
     const list = await fetchVersionList();
     const cfgPairs = await Promise.all(list.map(async (item) => ({
-      item: item, cfg: await fetchVersionConfig(item.version)
+      item: item, cfg: await fetchVersionConfig(item.version, item.fileNames)
     })));
     saveMetaCache();
     const byName = {};
@@ -297,7 +348,7 @@
       if (!cfg) continue;
       const pv = parseVersionDir(item.version);
       for (const entry of cfg) {
-        const region = pv ? pv.region : null;
+        const region = (pv && pv.region) ? pv.region : inferRegion(entry.datasetName);
         for (const name of (entry.raidMatchNames || [])) {
           const n = normalizeText(name);
           if (!byName[n]) byName[n] = [];
@@ -319,34 +370,30 @@
   // 优先用 document.title（FFLogs 页面标题形如 "杀条_战斗_4 - 报告: Dancing Mad - FF Logs"，必含当前副本名）。
   // 整页 HTML 扫描只作最后兜底：页面上可能出现其它副本的引用（如他人战绩列表），
   // 此前曾把 Futures Rewritten 误判为当前副本，导致拉错数据源（取成 v750z 的伊甸数据）。
+  // 在一段已标准化的文本中匹配副本名：先命中数据源英文名，再用中文别名桥接。
+  // 标题匹配与表格容器兜底共用同一套逻辑，避免两处写法漂移。
+  function matchEncounter(norm, idx) {
+    if (!norm) return null;
+    for (const name of idx.names) {
+      if (norm.includes(name)) return name;
+    }
+    for (const cn in ENCOUNTER_ALIASES) {
+      const en = normalizeText(ENCOUNTER_ALIASES[cn]);
+      if (norm.includes(normalizeText(cn)) && idx.byName[en]) return en;
+    }
+    return null;
+  }
+
   async function extractEncounterName() {
     const idx = await buildDatasetIndex();
     for (let attempt = 0; attempt < 3; attempt++) {
       // 1) 页面标题（最可靠）
-      const titleNorm = normalizeText(document.title || '');
-      if (titleNorm) {
-        for (const name of idx.names) {
-          if (titleNorm.includes(name)) return name;
-        }
-        for (const cn in ENCOUNTER_ALIASES) {
-          if (titleNorm.includes(normalizeText(cn))) {
-            const en = normalizeText(ENCOUNTER_ALIASES[cn]);
-            if (idx.byName[en]) return en;
-          }
-        }
-      }
+      const titleHit = matchEncounter(normalizeText(document.title || ''), idx);
+      if (titleHit) return titleHit;
       // 2) 兜底：只在报告表格容器内扫描（范围远小于整页，误判概率低）
       const scope = document.getElementById('main-table-container') || document.body;
-      const scopeNorm = normalizeText(scope.innerHTML || '');
-      for (const name of idx.names) {
-        if (scopeNorm.includes(name)) return name;
-      }
-      for (const cn in ENCOUNTER_ALIASES) {
-        if (scopeNorm.includes(normalizeText(cn))) {
-          const en = normalizeText(ENCOUNTER_ALIASES[cn]);
-          if (idx.byName[en]) return en;
-        }
-      }
+      const scopeHit = matchEncounter(normalizeText(scope.innerHTML || ''), idx);
+      if (scopeHit) return scopeHit;
       if (attempt < 2) await new Promise(r => setTimeout(r, 1200));
     }
     return null;
@@ -396,20 +443,20 @@
   function invalidateCachesIfContextChanged() {
     const ctx = computeContext();
     if (ctx === activeContext) return;
-    console.log('[phase-color] 上下文切换 ' + (activeContext || '(初始)') + ' -> ' + ctx + '，失效旧副本缓存');
+    log('[phase-color] 上下文切换 ' + (activeContext || '(初始)') + ' -> ' + ctx + '，失效旧副本缓存');
     activeContext = ctx;
     encounterNamePromise = null;
     Object.keys(phaseCsvPromises).forEach(k => delete phaseCsvPromises[k]);
     Object.keys(phaseCsvLoadPromises).forEach(k => delete phaseCsvLoadPromises[k]);
     Object.keys(percentileCache).forEach(k => delete percentileCache[k]);
     // 同时剥掉旧副本残留的彩色单元格（保留表头），避免 SPA 复用行节点导致旧数字滞留
-    document.querySelectorAll('.percentile-cell-v14').forEach(el => el.remove());
+    document.querySelectorAll('.percentile-cell-' + SCHEMA_VERSION).forEach(el => el.remove());
   }
 
   function getEncounterNameOnce() {
     if (!encounterNamePromise) {
       encounterNamePromise = extractEncounterName().then(function (name) {
-        console.log('[phase-color] 匹配到的副本名: ' + name);
+        log('[phase-color] 匹配到的副本名: ' + name);
         return name;
       });
     }
@@ -427,7 +474,7 @@
           if (enc) {
             result = await resolveCsvUrl(normalizeText(enc), key, PREFERRED_REGION);
             if (result) {
-              console.log('[phase-color] region=' + PREFERRED_REGION + ' phase=' + key +
+              log('[phase-color] region=' + PREFERRED_REGION + ' phase=' + key +
                 ' -> 数据源: ' + result.url + ' (目录: ' + result.version + ')');
             }
           }
@@ -451,7 +498,7 @@
         const r = await resolvePhaseCsv(phaseId);
         if (!r) return null;
         if (csvCache[r.url]) return r.url;
-        console.log('[phase-color] 请求CSV数据: ' + r.url);
+        log('[phase-color] 请求CSV数据: ' + r.url);
         const csvText = await gmGetTextWithFallback(r.url);
         csvCache[r.url] = csvText;
         saveCache();
@@ -599,7 +646,7 @@
 
   // 确保表头存在百分位列标题（仅插入一次）
   function ensurePercentileHeader() {
-    if (document.querySelector('.percentile-header-v14')) return;
+    if (document.querySelector('.percentile-header-' + SCHEMA_VERSION)) return;
 
     const headerRow = document.querySelector('table thead tr');
     if (!headerRow) return;
@@ -609,10 +656,10 @@
     // 这样 CN_logs/EN_logs 表头能自动匹配 FFLogs 原生的 UI 风格。
     const firstTh = headerRow.querySelector('th');
     if (firstTh) {
-      th.className = firstTh.className + ' percentile-column percentile-header percentile-header-v14';
+      th.className = firstTh.className + ' percentile-column percentile-header percentile-header-' + SCHEMA_VERSION;
       if (!th.getAttribute('scope')) th.setAttribute('scope', 'col');
     } else {
-      th.className = 'percentile-column percentile-header percentile-header-v14';
+      th.className = 'percentile-column percentile-header percentile-header-' + SCHEMA_VERSION;
     }
     // 国服(z)显示 CN_logs，国际服(j)显示 EN_logs
     th.textContent = PREFERRED_REGION === 'z' ? 'CN_logs' : 'EN_logs';
@@ -682,7 +729,7 @@
 
       // 创建百分位单元格（初始为空）
       const cell = document.createElement('td');
-      cell.className = 'main-table-performance rank percentile-column percentile-cell-v14';
+      cell.className = 'main-table-performance rank percentile-column percentile-cell-' + SCHEMA_VERSION;
       cell.innerHTML = '<span>加载中...</span>';
 
       // 插入单元格
@@ -705,7 +752,7 @@
       // 获取rdps值
       const rdps = getRDPS(row);
       // 诊断日志必须放在 rdps 声明之后（v0.14 曾误放在前面导致 TDZ 报错、整列构建中断）
-      if (DEBUG) console.log('[phase-color] 行职业: ' + jobClass + ' | rdps=' + rdps);
+      if (DEBUG) log('[phase-color] 行职业: ' + jobClass + ' | rdps=' + rdps);
       if (rdps === null) {
         // 无RDPS数据，显示-
         updatePercentileCell(cell, '-');
@@ -815,7 +862,7 @@
     // 移除条件：非分P页面（含 ALL Phases: phase=all）且已存在百分位列，
     //          或非伤害统计页面 -> 移除并退出
     if ((!isPhasePage && hasPercentileColumn) || isNonDamagePage) {
-      console.log('检测到非分P页面(含ALL Phases)或非伤害统计页面，移除所有百分位列');
+      log('检测到非分P页面(含ALL Phases)或非伤害统计页面，移除所有百分位列');
       removePercentileColumns();
       return;
     }
@@ -843,7 +890,7 @@
 
     // 如果有行但没有百分位列，或者有空的百分位单元格，或者有加载中的单元格
     if (needsPercentileColumn || hasEmptyPercentileCells || hasLoadingCells) {
-      console.log('检测到表格需要更新，重新添加百分位列');
+      log('检测到表格需要更新，重新添加百分位列');
       addPercentileColumn();
     }
   }
@@ -856,17 +903,17 @@
     });
   }
 
-  // 清理旧版本脚本残留的百分位单元格/表头（不带 v14 版本标记的）
+  // 清理旧版本脚本残留的百分位单元格/表头（不带当前结构版本标记的）
   // 背景：如果 Tampermonkey 中同时启用了多个版本的脚本，旧版会插入用错误数据源
   // （如国际服数据）计算的单元格，与本版互相覆盖，导致显示错误的百分位。
   function removeLegacyPercentileCells() {
     const legacy = document.querySelectorAll(
-      '.percentile-column:not(.percentile-cell-v14):not(.percentile-header-v14)'
+      '.percentile-column:not(.percentile-cell-' + SCHEMA_VERSION + '):not(.percentile-header-' + SCHEMA_VERSION + ')'
     );
     if (legacy.length > 0) {
       console.warn('[phase-color] 检测到 ' + legacy.length +
         ' 个旧版脚本插入的百分位单元格/表头，已清理。' +
-        '请打开 Tampermonkey 管理面板，检查是否同时启用了多个版本的 FFLogs 脚本，只保留一个（v0.14）！');
+        '请打开 Tampermonkey 管理面板，检查是否同时启用了多个版本的 FFLogs 脚本，只保留一个（v' + SCRIPT_VERSION + '）！');
       legacy.forEach(el => el.remove());
       return true;
     }
@@ -875,7 +922,7 @@
 
   // 处理phase报告页面
   async function processPhaseReport() {
-    console.log('FFLogs百分位显示脚本已加载');
+    log('FFLogs百分位显示脚本已加载');
 
     // 等待页面完全加载
     await new Promise(r => setTimeout(r, 2000));
@@ -900,7 +947,7 @@
       });
 
       if (tableChanged) {
-        console.log('检测到表格变化，准备更新');
+        log('检测到表格变化，准备更新');
         // 使用setTimeout延迟处理，避免频繁更新
         setTimeout(() => {
           handleTableUpdate();
@@ -925,7 +972,7 @@
 
     // 检查是否在带phase参数的页面上
     if (isPhaseReport()) {
-      console.log('检测到phase报告页面，开始处理...');
+      log('检测到phase报告页面，开始处理...');
       processPhaseReport();
     }
   }
